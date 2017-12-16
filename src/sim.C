@@ -98,28 +98,40 @@ bool compare_second(std::pair<int, double> a, std::pair<int, double> b){
   return (a.second < b.second);
 }
 
-void set_chamber(string chamber, int m_wind, int m_sig_art, int m_xroad, bool uvrflag, bool trapflag){
+void set_chamber(string chamber, int m_wind, int m_sig_art, int m_xroad, bool uvrflag, bool trapflag, int m_nstrips){
   // function to set parameters in a smart way
 
   if (chamber == "small"){
-
-    NSTRIPS = 8800; // has to be multiple of x road
+    if (m_nstrips == -1){
+      NSTRIPS = 8800; // has to be multiple of x road
+    }
+    else {
+      NSTRIPS = m_nstrips;
+    }
     xlow = 0.;
     xhigh = NSTRIPS*0.4-0.2;
     ylow = 0.;
     yhigh = trapflag ? 1821. : 500.;
   }
   else if (chamber == "large"){
-
-    NSTRIPS = 8800; // has to be multiple of x road
+    if (m_nstrips == -1){
+      NSTRIPS = 8800; // has to be multiple of x road
+    }
+    else {
+      NSTRIPS = m_nstrips;
+    }
     xlow = 0.;
     xhigh = NSTRIPS*0.4-0.2;
     ylow = 0.;
     yhigh = 2200.;
   }
   else if (chamber == "oct"){
-
-    NSTRIPS = 512; // has to be multiple of x road
+    if (m_nstrips == -1){
+      NSTRIPS = 512; // has to be multiple of x road
+    }
+    else {
+      NSTRIPS = m_nstrips;
+    }
     xlow = 0.;
     xhigh = NSTRIPS*0.4-0.2;
     ylow = 17.9;
@@ -215,8 +227,6 @@ tuple<double,double> cosmic_angle(){
 }
 
 vector<Road*> create_roads(const GeoOctuplet& geometry, bool uvrflag, int m_xthr, int m_uvthr, string chamber, bool trapflag){
-  if (NSTRIPS % XROAD != 0)
-    cout << "Not divisible!" << endl;
   int nroad = NSTRIPS/XROAD;
   vector<Road*> m_roads;
   for ( int i = 0; i < nroad; i++){
@@ -691,12 +701,17 @@ int main(int argc, char* argv[]) {
   int nevents = -1;
   int bkgrate = 0; // Hz per strip
 
-  int m_xroad = 8;
+  int m_xroad = 8; 
+  int m_NSTRIPS = -1;
+
   int m_bcwind = 8;
   int m_sig_art = 32;
+
+  int m_sig_art_x = 1; // smear ART position, in strips
+
   vector<double> mm_eff = {1., 1., 1., 1., 1., 1., 1., 1.};
-  //  vector<double> mm_eff = {0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9, 0.9};
   double chamber_eff = -1;
+
   string histograms = "histograms";
 
   // coincidence params
@@ -712,6 +727,7 @@ int main(int argc, char* argv[]) {
   bool ideal_addc = false;
   bool write_tree = false;
   bool bkgonly = false;
+  bool smear_art = false;
 
   char outputFileName[400];
   char chamberType[400];
@@ -794,6 +810,12 @@ int main(int argc, char* argv[]) {
     if (strncmp(argv[i],"-tree", 5)==0){
       write_tree = true;
     }
+    if (strncmp(argv[i],"-strips", 7)==0){
+      m_NSTRIPS = atoi(argv[i+1]);
+    }
+    if (strncmp(argv[i],"-smear",6)==0){
+      smear_art = true;
+    }
   }
   if (!b_out){
     cout << "Error at Input: please specify output file (-o flag)" << endl;
@@ -810,8 +832,19 @@ int main(int argc, char* argv[]) {
     return 0;
   }
 
-  set_chamber( string(chamberType), m_bcwind, m_sig_art, m_xroad, uvrflag, trapflag);
+  set_chamber( string(chamberType), m_bcwind, m_sig_art, m_xroad, uvrflag, trapflag, m_NSTRIPS);
   
+  if (NSTRIPS % XROAD != 0) {
+    cout << "Number of strips not divisible by the road size!" << endl;
+    return 0;
+  }
+  
+  if ( ( (mu_xlow || mu_xhigh) < xlow) || ( (mu_xlow || mu_xhigh) > xhigh) || (mu_xlow > mu_xhigh) ){
+    cout << "Muon active area is outside the chamber area!" << endl;
+    return 0;
+  } 
+
+
   cout << endl;
   cout << blue << "--------------" << ending << endl;
   cout << blue << "OCT SIM ✪ ‿ ✪ " << ending << endl;
@@ -822,15 +855,18 @@ int main(int argc, char* argv[]) {
   cout << endl;
   printf("\r >> bkgonly flag: %s", bkgonly ? "true" : "false");
   cout << endl;
+  printf("\r >> smear art position: %s", smear_art ? "true" : "false");
+  cout << endl;
   printf("\r >> x-road size (in strips): %d, +/- neighbor roads (uv): %d", XROAD, UVFACTOR);
   cout << endl;
   printf("\r >> art res (in ns): %d", m_sig_art);
   cout << endl;
   cout << "\r >> Using BCID window: " << bc_wind << endl;
   printf("\r >> Background rate of %d Hz per strip",bkgrate);
-//   printf("\r >> Background rate of %d Hz per square mm",bkgrate);
   cout << endl;
   printf("\r >> Assuming chamber size: (%4.1f,%4.1f) in mm",xhigh-xlow, yhigh-ylow);
+  cout << endl;
+  printf("\r >> Assuming muon active area: (%4.1f,%4.1f) in mm",mu_xhigh-mu_xlow, mu_yhigh-mu_ylow);
   cout << endl;
   printf("\r >> Using UV roads: %s", (uvrflag) ? "true" : "false");
   cout << endl;
@@ -1003,6 +1039,7 @@ int main(int argc, char* argv[]) {
     
     double art_time;
     
+    double strip, strip_smear;
     for ( int j = 0; j < NPLANES; j++){
       if (oct_hitmask[j] == 1){
         if (j < 2)
@@ -1016,7 +1053,16 @@ int main(int argc, char* argv[]) {
       art_time = ran->Gaus(400.,(double)(sig_art));
       art_bc[j] = (int)floor(art_time/25.);
       Hit* newhit = nullptr;
-      newhit = new Hit(j, art_bc[j], xpos[j], ypos[j], false, *GEOMETRY);
+
+      strip = GEOMETRY->Get(j).channel_from_pos(xpos[j],ypos[j]);
+      if (smear_art){
+        strip_smear = round(ran->Gaus(strip,m_sig_art_x));
+      }
+      else{
+        strip_smear = strip;
+      }
+      newhit = new Hit(j, art_bc[j], strip_smear, false, *GEOMETRY);
+      //newhit = new Hit(j, art_bc[j], xpos[j], ypos[j], false, *GEOMETRY);
       if (!bkgonly)
 	hits.push_back(newhit);
       }
@@ -1248,8 +1294,8 @@ int main(int argc, char* argv[]) {
   mylog << "Using BCID window: " << bc_wind << "\n";
   //  mylog << "Background rate of " << bkgrate << " Hz per square mm\n";
   mylog << "Background rate of " << bkgrate << " Hz per strip\n";
-  mylog << "Assuming chamber size: ("<<xhigh-xlow <<", "<< yhigh-ylow << ") in mm\n";
-
+  mylog << "Assuming chamber size: (" << xhigh-xlow << ", " << yhigh-ylow << ") in mm\n";
+  mylog << "Assuming muon active area: ("<< mu_xhigh-mu_xlow<< ", "<< mu_yhigh-mu_ylow <<") in mm\n";
 
   mylog << "\n";
   mylog << "SIMULATION SUMMARY:\n";
